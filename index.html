@@ -7,10 +7,6 @@
 <link id="faviconLink" rel="icon" type="image/png" href=""/>
 <!-- Font families loaded dynamically based on selected font model -->
 <link id="fontLink" rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Sora:wght@300;400;500;600;700;800&display=swap"/>
-<!-- Firebase SDKs -->
-<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
-<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
-<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-analytics-compat.js"></script>
 <style>
 /* ══════════════════════════════════════════════
    VARIÁVEIS — toda aparência controlada aqui
@@ -890,6 +886,11 @@ input[type=color]{border:1.5px solid var(--border);border-radius:7px;padding:2px
   </div>
 </div>
 
+<!-- Firebase SDKs — carregados antes do script principal -->
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-analytics-compat.js"></script>
+
 <script>
 /* ═══════════════════════════════════════════════════
    FIREBASE CONFIG — substitua com suas credenciais
@@ -913,17 +914,36 @@ const analytics = firebase.analytics();
 ═══════════════════════════════════════════════════ */
 
 // Retorna todos os docs de uma coleção como array, ordenado por campo
+// Tenta cache local primeiro para acelerar carregamentos subsequentes
 async function fbGetAll(collection, orderField = null) {
   let ref = db.collection(collection);
   if (orderField) ref = ref.orderBy(orderField);
-  const snap = await ref.get();
+  let snap;
+  try {
+    snap = await ref.get({ source: 'cache' });
+    if (snap.empty) snap = await ref.get({ source: 'server' });
+  } catch(e) {
+    snap = await ref.get({ source: 'server' });
+  }
   return snap.docs.map(d => ({ id: d.id, _numId: d.data()._numId || 0, ...d.data() }));
 }
 
 // Retorna o documento de configuração da loja (único doc com id fixo)
+// Se não existir, cria o doc vazio sem bloquear e retorna null imediatamente
 async function fbGetConfig() {
-  const snap = await db.collection('store_config').doc('main').get();
-  if (!snap.exists) return null;
+  const ref = db.collection('store_config').doc('main');
+  let snap;
+  try {
+    snap = await ref.get({ source: 'cache' });
+    if (!snap.exists) snap = await ref.get({ source: 'server' });
+  } catch(e) {
+    snap = await ref.get({ source: 'server' });
+  }
+  if (!snap.exists) {
+    ref.set({ _initialized: true, created_at: firebase.firestore.FieldValue.serverTimestamp() })
+       .catch(e => console.warn('fbGetConfig init:', e));
+    return null;
+  }
   return { id: 'main', ...snap.data() };
 }
 
@@ -1047,15 +1067,24 @@ function loadCart(){try{const d=localStorage.getItem('_cart');if(d)S.cart=JSON.p
 
 /* ═══════ FIREBASE: LOAD ALL ═══════ */
 async function sbLoad(){
+  // Mostra a loja com dados padrão imediatamente (sem travar na tela de loading)
   showLoader(true);
+  // Timeout de segurança: se demorar mais de 8s, mostra a loja vazia assim mesmo
+  const safetyTimer = setTimeout(() => {
+    showLoader(false);
+    _activar('pgStore');
+    renderStore();
+  }, 8000);
   try{
-    // Carrega em paralelo
+    // Carrega em paralelo com timeout individual de 6s por coleção
+    const withTimeout = (p, ms=6000) => Promise.race([p, new Promise((_,r)=>setTimeout(()=>r(new Error('timeout')),ms))]);
     const [cfg, cats, prods, pays] = await Promise.all([
-      fbGetConfig(),
-      fbGetAll('categories','sort_order'),
-      fbGetAll('products','sort_order'),
-      fbGetAll('payments','sort_order'),
+      withTimeout(fbGetConfig()),
+      withTimeout(fbGetAll('categories','sort_order')),
+      withTimeout(fbGetAll('products','sort_order')),
+      withTimeout(fbGetAll('payments','sort_order')),
     ]);
+    clearTimeout(safetyTimer);
 
     if(cfg){
       const c=cfg;
@@ -1102,9 +1131,11 @@ async function sbLoad(){
     S.cart=S.cart.filter(ci=>S.products.find(p=>p.id===ci.id));
 
   }catch(e){
+    clearTimeout(safetyTimer);
     console.error('Erro ao carregar dados:',e);
-    toast('❌ Erro ao conectar com o servidor. Verifique sua conexão.');
+    toast('❌ Erro ao conectar com o servidor. Tente recarregar a página.');
   }
+  clearTimeout(safetyTimer);
   showLoader(false);
   _activar('pgStore');
   renderStore();
@@ -2822,7 +2853,7 @@ async function hashPassword(pw){
 
 /* ═══════ INIT ═══════ */
 
-sbLoad();
+document.addEventListener('DOMContentLoaded', () => { sbLoad(); });
 </script>
 </body>
 </html>
