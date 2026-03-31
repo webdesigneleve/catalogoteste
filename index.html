@@ -7,6 +7,7 @@
 <link id="faviconLink" rel="icon" type="image/png" href=""/>
 <!-- Font families loaded dynamically based on selected font model -->
 <link id="fontLink" rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Sora:wght@300;400;500;600;700;800&display=swap"/>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <style>
 /* ══════════════════════════════════════════════
    VARIÁVEIS — toda aparência controlada aqui
@@ -886,96 +887,13 @@ input[type=color]{border:1.5px solid var(--border);border-radius:7px;padding:2px
   </div>
 </div>
 
-<!-- Firebase SDKs — carregados antes do script principal -->
-<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
-<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
-<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-analytics-compat.js"></script>
-
 <script>
 /* ═══════════════════════════════════════════════════
-   FIREBASE CONFIG — substitua com suas credenciais
+   SUPABASE CONFIG
 ═══════════════════════════════════════════════════ */
-const firebaseConfig = {
-  apiKey:            "AIzaSyCBqm9is1hg2KJ48K_U2YH25FxCRujhmVA",
-  authDomain:        "catalogobd1.firebaseapp.com",
-  projectId:         "catalogobd1",
-  storageBucket:     "catalogobd1.firebasestorage.app",
-  messagingSenderId: "138918011567",
-  appId:             "1:138918011567:web:9aad38c9fe2e8ecef0aa5a",
-  measurementId:     "G-66BFD45PFD"
-};
-firebase.initializeApp(firebaseConfig);
-const db = firebase.firestore();
-db.settings({ databaseId: 'bdcatal1teste' });
-const analytics = firebase.analytics();
-
-/* ═══════════════════════════════════════════════════
-   HELPERS Firestore — imitam a API do Supabase
-   para minimizar mudanças no resto do código
-═══════════════════════════════════════════════════ */
-
-// Retorna todos os docs de uma coleção como array, ordenado por campo
-// Tenta cache local primeiro para acelerar carregamentos subsequentes
-async function fbGetAll(collection, orderField = null) {
-  let ref = db.collection(collection);
-  if (orderField) ref = ref.orderBy(orderField);
-  let snap;
-  try {
-    snap = await ref.get({ source: 'cache' });
-    if (snap.empty) snap = await ref.get({ source: 'server' });
-  } catch(e) {
-    snap = await ref.get({ source: 'server' });
-  }
-  return snap.docs.map(d => ({ id: d.id, _numId: d.data()._numId || 0, ...d.data() }));
-}
-
-// Retorna o documento de configuração da loja (único doc com id fixo)
-// Se não existir, cria o doc vazio sem bloquear e retorna null imediatamente
-async function fbGetConfig() {
-  const ref = db.collection('store_config').doc('main');
-  let snap;
-  try {
-    snap = await ref.get({ source: 'cache' });
-    if (!snap.exists) snap = await ref.get({ source: 'server' });
-  } catch(e) {
-    snap = await ref.get({ source: 'server' });
-  }
-  if (!snap.exists) {
-    ref.set({ _initialized: true, created_at: firebase.firestore.FieldValue.serverTimestamp() })
-       .catch(e => console.warn('fbGetConfig init:', e));
-    return null;
-  }
-  return { id: 'main', ...snap.data() };
-}
-
-// Salva (merge) o documento de configuração
-async function fbSetConfig(payload) {
-  await db.collection('store_config').doc('main').set(payload, { merge: true });
-}
-
-// Insere um novo documento gerando id numérico sequencial via counter
-async function fbInsert(collection, data) {
-  const counterRef = db.collection('_counters').doc(collection);
-  let newId;
-  await db.runTransaction(async tx => {
-    const counterSnap = await tx.get(counterRef);
-    newId = counterSnap.exists ? (counterSnap.data().next || 1) : 1;
-    tx.set(counterRef, { next: newId + 1 }, { merge: true });
-    const docRef = db.collection(collection).doc(String(newId));
-    tx.set(docRef, { ...data, _numId: newId });
-  });
-  return newId;
-}
-
-// Atualiza um documento existente pelo id numérico (string)
-async function fbUpdate(collection, id, data) {
-  await db.collection(collection).doc(String(id)).update(data);
-}
-
-// Exclui um documento pelo id numérico (string)
-async function fbDelete(collection, id) {
-  await db.collection(collection).doc(String(id)).delete();
-}
+const SB_URL='https://gvbndwtmlpincfafuyyt.supabase.co';
+const SB_KEY='sb_publishable_5A7oH_6d9TLqYdGtxnyGrg_aK8toLKm';
+const sb=supabase.createClient(SB_URL,SB_KEY);
 
 
 const DEF_TMPL=`✨ {{LOJA}} ✨
@@ -1066,29 +984,20 @@ let S={
 function saveCart(){try{localStorage.setItem('_cart',JSON.stringify(S.cart))}catch(e){}}
 function loadCart(){try{const d=localStorage.getItem('_cart');if(d)S.cart=JSON.parse(d)}catch(e){}}
 
-/* ═══════ FIREBASE: LOAD ALL ═══════ */
+/* ═══════ SUPABASE: LOAD ALL ═══════ */
 async function sbLoad(){
-  // Mostra a loja com dados padrão imediatamente (sem travar na tela de loading)
   showLoader(true);
-  // Timeout de segurança: se demorar mais de 8s, mostra a loja vazia assim mesmo
-  const safetyTimer = setTimeout(() => {
-    showLoader(false);
-    _activar('pgStore');
-    renderStore();
-  }, 8000);
   try{
-    // Carrega em paralelo com timeout individual de 6s por coleção
-    const withTimeout = (p, ms=6000) => Promise.race([p, new Promise((_,r)=>setTimeout(()=>r(new Error('timeout')),ms))]);
-    const [cfg, cats, prods, pays] = await Promise.all([
-      withTimeout(fbGetConfig()),
-      withTimeout(fbGetAll('categories','sort_order')),
-      withTimeout(fbGetAll('products','sort_order')),
-      withTimeout(fbGetAll('payments','sort_order')),
+    // Load in parallel
+    const [cfgRes,catRes,prodRes,payRes]=await Promise.all([
+      sb.from('store_config').select('*').eq('id',1).single(),
+      sb.from('categories').select('*').order('sort_order'),
+      sb.from('products').select('*').order('sort_order').order('id'),
+      sb.from('payments').select('*').order('sort_order'),
     ]);
-    clearTimeout(safetyTimer);
 
-    if(cfg){
-      const c=cfg;
+    if(cfgRes.data){
+      const c=cfgRes.data;
       S.store={name:c.name||'',desc:c.description||'',logo:c.logo||'',wa:c.wa||'',
                addr:c.addr||'',phone:c.phone||'',minOrder:c.min_order||0,deliveryFee:c.delivery_fee||0,
                checkoutNotice:c.checkout_notice||'',bannerImages:c.banner_images||[],
@@ -1106,43 +1015,55 @@ async function sbLoad(){
       S.stockWarnRed=c.stock_warn_red||2;
     }
 
-    S.categories = cats.map(c=>({
-      id: c._numId, name:c.name, emoji:c.emoji, subcats:c.subcats||[], image:c.image||''
-    }));
+    if(catRes.data){
+      S.categories=catRes.data.map(c=>({
+        id:c.id,name:c.name,emoji:c.emoji,subcats:c.subcats||[],image:c.image||''
+      }));
+    }
 
-    S.products = prods.map(p=>({
-      id:p._numId, catId:p.cat_id, subcat:p.subcat||'', name:p.name,
-      desc:p.description||'', price:parseFloat(p.price),
-      oldPrice:p.old_price?parseFloat(p.old_price):0,
-      images:p.images||[], emoji:p.emoji||'🛍️', stock:p.stock,
-      stockQty:p.stock_qty!=null?parseInt(p.stock_qty):-1,
-      variations:p.variations||[]
-    }));
-    if(S.products.length) S.nextProd=Math.max(...S.products.map(p=>p.id))+1;
+    if(prodRes.data){
+      S.products=prodRes.data.map(p=>{
+        // Map snake_case DB columns to camelCase used in app
+        const mapped = {
+          id:p.id,catId:p.cat_id,subcat:p.subcat||'',name:p.name,
+          desc:p.description||'',price:parseFloat(p.price),
+          oldPrice:p.old_price?parseFloat(p.old_price):0,
+          images:p.images||[],emoji:p.emoji||'🛍️',stock:p.stock,
+          stockQty:p.stock_qty!=null?parseInt(p.stock_qty):-1,
+          variations:p.variations||[]
+        };
+        return mapped;
+      });
+      // Track max id for new products
+      if(S.products.length) S.nextProd=Math.max(...S.products.map(p=>p.id))+1;
+    }
 
-    S.payments = pays.map(p=>({id:p._numId, name:p.name, icon:p.icon}));
-    if(S.payments.length) S.nextPay=Math.max(...S.payments.map(p=>p.id))+1;
+    if(payRes.data){
+      S.payments=payRes.data.map(p=>({id:p.id,name:p.name,icon:p.icon}));
+      if(S.payments.length) S.nextPay=Math.max(...S.payments.map(p=>p.id))+1;
+    }
 
-    // Aplica tema
+    // Apply theme
     const hue=S.customColor?S.customColor.h:350;
-    _selHue=hue; _selMode=S.paletteId||0;
+    _selHue=hue;
+    _selMode=S.paletteId||0;
     applyMode(_selMode===1, hue);
 
+    // Load cart from localStorage
     loadCart();
+    // Remove cart items whose products no longer exist
     S.cart=S.cart.filter(ci=>S.products.find(p=>p.id===ci.id));
 
   }catch(e){
-    clearTimeout(safetyTimer);
     console.error('Erro ao carregar dados:',e);
-    toast('❌ Erro ao conectar com o servidor. Tente recarregar a página.');
+    toast('❌ Erro ao conectar com o servidor. Verifique sua conexão.');
   }
-  clearTimeout(safetyTimer);
   showLoader(false);
   _activar('pgStore');
   renderStore();
 }
 
-/* ═══════ FIREBASE: SAVE CONFIG ═══════ */
+/* ═══════ SUPABASE: SAVE CONFIG ═══════ */
 async function sbSave(){
   const payload={
     name:S.store.name||'',description:S.store.desc||'',logo:S.store.logo||'',
@@ -1159,12 +1080,13 @@ async function sbSave(){
     stock_warn_red:S.stockWarnRed||2,
   };
   try{
-    await fbSetConfig(payload);
+    const {error}=await sb.from('store_config').update(payload).eq('id',1);
+    if(error){console.error('sbSave:',error);toast('❌ Erro ao salvar: '+error.message);return false;}
     return true;
   }catch(e){console.error('Erro ao salvar:',e);toast('❌ Erro ao salvar configurações!');return false;}
 }
 
-/* ═══════ FIREBASE: PRODUCTS CRUD ═══════ */
+/* ═══════ SUPABASE: PRODUCTS CRUD ═══════ */
 async function sbSaveProd(data,id){
   try{
     const row={
@@ -1175,14 +1097,16 @@ async function sbSaveProd(data,id){
       variations:data.variations,
     };
     if(id){
-      await fbUpdate('products', id, row);
+      const {error}=await sb.from('products').update(row).eq('id',id);
+      if(error)throw error;
       const i=S.products.findIndex(x=>x.id===id);
       if(i>=0)S.products[i]={...S.products[i],...data};
     }else{
-      const newId = await fbInsert('products', row);
-      const newProd={...data,id:newId};
+      const {data:ins,error}=await sb.from('products').insert(row).select().single();
+      if(error)throw error;
+      const newProd={...data,id:ins.id};
       S.products.push(newProd);
-      S.nextProd=newId+1;
+      S.nextProd=ins.id+1;
     }
     closeMod();renderProds();
     toast(`✅ Produto ${id?'atualizado':'criado'}!`);
@@ -1191,7 +1115,8 @@ async function sbSaveProd(data,id){
 async function sbDelProd(id){
   if(!confirm('Excluir este produto?'))return;
   try{
-    await fbDelete('products', id);
+    const {error}=await sb.from('products').delete().eq('id',id);
+    if(error)throw error;
     S.products=S.products.filter(p=>p.id!==id);
     S.cart=S.cart.filter(c=>c.id!==id);
     renderProds();updBadge();saveCart();
@@ -1199,17 +1124,19 @@ async function sbDelProd(id){
   }catch(e){console.error(e);toast('❌ Erro ao excluir: '+e.message)}
 }
 
-/* ═══════ FIREBASE: CATEGORIES CRUD ═══════ */
+/* ═══════ SUPABASE: CATEGORIES CRUD ═══════ */
 async function sbSaveCat(data,id){
   try{
     const row={name:data.name,emoji:data.emoji,subcats:data.subcats,image:data.image||''};
     if(id){
-      await fbUpdate('categories', id, row);
+      const {error}=await sb.from('categories').update(row).eq('id',id);
+      if(error)throw error;
       const c=S.categories.find(x=>x.id===id);
       if(c)Object.assign(c,data);
     }else{
-      const newId = await fbInsert('categories', row);
-      S.categories.push({...data,id:newId});
+      const {data:ins,error}=await sb.from('categories').insert(row).select().single();
+      if(error)throw error;
+      S.categories.push({...data,id:ins.id});
     }
     closeMod();renderCats();renderNavCats();
     toast(`✅ Categoria ${id?'atualizada':'criada'}!`);
@@ -1218,37 +1145,40 @@ async function sbSaveCat(data,id){
 async function sbDelCat(id){
   if(!confirm('Excluir categoria?'))return;
   try{
-    await fbDelete('categories', id);
+    const {error}=await sb.from('categories').delete().eq('id',id);
+    if(error)throw error;
     S.categories=S.categories.filter(c=>c.id!==id);
     renderCats();renderNavCats();
     toast('🗑️ Excluído!');
   }catch(e){console.error(e);toast('❌ Erro ao excluir: '+e.message)}
 }
 
-/* ═══════ FIREBASE: PAYMENTS CRUD ═══════ */
+/* ═══════ SUPABASE: PAYMENTS CRUD ═══════ */
 async function sbSavePay(name,icon){
   try{
-    const newId = await fbInsert('payments', {name, icon});
-    S.payments.push({id:newId,name,icon});
+    const {data,error}=await sb.from('payments').insert({name,icon}).select().single();
+    if(error)throw error;
+    S.payments.push({id:data.id,name,icon});
     renderPayments();
     toast('✅ Adicionado!');
   }catch(e){console.error(e);toast('❌ Erro ao salvar: '+e.message)}
 }
 async function sbDelPay(id){
   try{
-    await fbDelete('payments', id);
+    const {error}=await sb.from('payments').delete().eq('id',id);
+    if(error)throw error;
     S.payments=S.payments.filter(p=>p.id!==id);
     renderPayments();
     toast('🗑️ Removido!');
   }catch(e){console.error(e);toast('❌ Erro ao excluir: '+e.message)}
 }
 
-/* ═══════ FIREBASE: SAVE ORDER ═══════ */
+/* ═══════ SUPABASE: SAVE ORDER ═══════ */
 async function saveOrder(info){
   try{
     S.orderN++;
     const orderNum=String(S.orderN).padStart(4,'0');
-    const orderData = {
+    await sb.from('orders').insert({
       order_number:orderNum,
       customer_name:info.name,
       customer_phone:info.phone,
@@ -1266,12 +1196,10 @@ async function saveOrder(info){
       total:info.tot,
       change_val:info.trocoVal||0,
       notes:info.notes,
-      status:'novo',
-      created_at: firebase.firestore.FieldValue.serverTimestamp()
-    };
-    await db.collection('orders').add(orderData);
-    // Atualiza contador de pedidos na config
-    await fbSetConfig({order_counter: S.orderN});
+      status:'novo'
+    });
+    // Update order counter in DB
+    await sb.from('store_config').update({order_counter:S.orderN}).eq('id',1);
   }catch(e){console.error('Erro ao salvar pedido:',e)}
 }
 
@@ -2335,8 +2263,9 @@ function doLogin(){
       if(pw!==confirm){toast('⚠️ As senhas não coincidem!');return}
       btn.disabled=true;btn.textContent='Salvando...';
       hashPassword(pw).then(hash=>{
-        fbSetConfig({admin_pw:hash}).then(()=>{
+        sb.from('store_config').update({admin_pw:hash}).eq('id',1).then(({error})=>{
           btn.disabled=false;
+          if(error){toast('❌ Erro ao salvar senha: '+error.message);return}
           S._adminPwHash=hash;
           S.adminLogged=true;
           document.getElementById('logPw').value='';
@@ -2779,11 +2708,12 @@ function saveStore(){
     hashPassword(curPw).then(curHash=>{
       if(curHash!==S._adminPwHash){toast('❌ Senha atual incorreta!');return;}
       hashPassword(newPw).then(newHash=>{
-        fbSetConfig({admin_pw:newHash}).then(()=>{
+        sb.from('store_config').update({admin_pw:newHash}).eq('id',1).then(({error})=>{
+          if(error){toast('❌ Erro ao salvar senha: '+error.message);return;}
           S._adminPwHash=newHash;toast('✅ Senha alterada com sucesso!');
           document.getElementById('sPw').value='';
           if(document.getElementById('sCurPw'))document.getElementById('sCurPw').value='';
-        }).catch(e=>{toast('❌ Erro ao salvar senha: '+e.message);});
+        });
       });
     });
     return;
@@ -2854,7 +2784,7 @@ async function hashPassword(pw){
 
 /* ═══════ INIT ═══════ */
 
-document.addEventListener('DOMContentLoaded', () => { sbLoad(); });
+sbLoad();
 </script>
 </body>
 </html>
