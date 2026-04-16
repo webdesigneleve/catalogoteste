@@ -101,7 +101,7 @@ nav{padding:8px 0;flex:1;}
 /* ── KANBAN ── */
 .kanban-filter{display:flex;gap:8px;align-items:center;margin-bottom:14px;flex-wrap:wrap;}
 .kanban-filter select,.kanban-filter input{max-width:180px;font-size:12px;padding:7px 11px;}
-.kanban-outer{overflow-x:auto;padding-bottom:20px;user-select:none;}
+.kanban-outer{overflow-x:auto;padding-bottom:20px;user-select:none;height: 100vh;}
 .kanban-outer::-webkit-scrollbar{height:4px;}
 .kanban-outer::-webkit-scrollbar-thumb{background:var(--border);border-radius:2px;}
 .kanban-wrap{display:flex;gap:12px;align-items:flex-start;min-width:max-content;padding:2px 0;}
@@ -564,7 +564,7 @@ function renderKanban(c){
   if(kbVend) fl=fl.filter(l=>l.vendedor_id===kbVend);
   if(kbSearch) fl=fl.filter(l=>l.name.toLowerCase().includes(kbSearch.toLowerCase())||(l.phone||'').includes(kbSearch));
   const vSel=CU.role==='gestor'?`<select style="font-size:12px;padding:7px 11px;max-width:170px" onchange="kbVend=this.value;renderKanban(document.getElementById('content'))"><option value="">Todos os vendedores</option>${vendors.map(u=>`<option value="${u.login_id}" ${kbVend===u.login_id?'selected':''}>${u.name}</option>`).join('')}</select>`:'';
-  let html=`<div class="kanban-filter">${vSel}<input type="text" placeholder="Buscar lead..." value="${kbSearch}" oninput="kbSearch=this.value;renderKanban(document.getElementById('content'))" style="max-width:180px;font-size:12px;padding:7px 11px"></div>
+  let html=`<div class="kanban-filter">${vSel}<input type="text" placeholder="Buscar lead..." value="${kbSearch}" oninput="kbSearch=this.value;renderKanban(document.getElementById('content'))" style="max-width:100px;font-size:12px;padding:7px 11px"></div>
   <div class="kanban-outer" id="kanban-outer"><div class="kanban-wrap">`;
   C.stages.forEach(st=>{
     const cl=fl.filter(l=>l.column_id===st.id);
